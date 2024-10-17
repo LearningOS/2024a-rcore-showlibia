@@ -215,7 +215,7 @@ impl TaskManager {
         let end_vpn = VirtAddr::from(_start + _len).ceil();
         let vpn_ranges = VPNRange::new(start_vpn, end_vpn);
         for vpn in vpn_ranges {
-            if let Some(pte) = get_current_pte(vpn) {
+            if let Some(pte) = inner.tasks[current].memory_set.translate(vpn) {
                 if !pte.is_valid() {
                     return -1;
                 }
@@ -224,6 +224,7 @@ impl TaskManager {
                 return -1;
             }  
         }
+        println!("Test unmap_for End");
         0
     }
 }

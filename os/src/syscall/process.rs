@@ -1,9 +1,14 @@
 //! Process management syscalls
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, MEMORY_END, PAGE_SIZE}, mm::{translated_byte_buffer, MapPermission, VPNRange, VirtAddr}, task::{
-        change_program_brk, create_new_map_area, current_user_token, exit_current_and_run_next, get_current_pte, get_run_time, get_syscall_times, get_task_status, suspend_current_and_run_next, unmap_area, TaskStatus
-    }, timer::get_time_us
+    config::{MAX_SYSCALL_NUM, MEMORY_END, PAGE_SIZE},
+    mm::{translated_byte_buffer, MapPermission, VPNRange, VirtAddr},
+    task::{
+        change_program_brk, create_new_map_area, current_user_token, exit_current_and_run_next,
+        get_current_pte, get_run_time, get_syscall_times, get_task_status,
+        suspend_current_and_run_next, unmap_area, TaskStatus,
+    },
+    timer::get_time_us,
 };
 
 #[repr(C)]
@@ -44,18 +49,22 @@ pub fn sys_yield() -> isize {
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     // trace!("kernel: sys_get_time");
     let us = get_time_us();
-    let buffer = translated_byte_buffer(current_user_token(), _ts as * const u8, core::mem::size_of::<TimeVal>());
-    let time_val = TimeVal {
+    let dst_vec = translated_byte_buffer(
+        current_user_token(),
+        _ts as *const u8,
+        core::mem::size_of::<TimeVal>(),
+    );
+    let ref time_val = TimeVal {
         sec: us / 1_000_000,
         usec: us % 1_000_000,
     };
-    let time_val_ptr = &time_val as *const TimeVal;
-    for (i, b) in buffer.into_iter().enumerate() {
-        let b_len = b.len();
+    let src_ptr = time_val as *const TimeVal;
+    for (idx, dst) in dst_vec.into_iter().enumerate() {
+        let unit_len = dst.len();
         unsafe {
-            b.copy_from_slice(core::slice::from_raw_parts(
-                time_val_ptr.wrapping_byte_add(i * b_len) as *const u8,
-                b_len
+            dst.copy_from_slice(core::slice::from_raw_parts(
+                src_ptr.wrapping_byte_add(idx * unit_len) as *const u8,
+                unit_len,
             ));
         }
     }
@@ -67,21 +76,25 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     // trace!("kernel: sys_task_info NOT IMPLEMENTED YET!");
-    let buffer = translated_byte_buffer(current_user_token(), _ti as * const u8, core::mem::size_of::<TaskInfo>());
-    unsafe {
-        *_ti = TaskInfo {
-            status: get_task_status(),
-            syscall_times: get_syscall_times(),
-            time: get_run_time(),
-        }
-    }
-    let task_info_ptr = _ti as *const TaskInfo;
-    for (i, b) in buffer.into_iter().enumerate() {
-        let b_len = b.len();
+    let dst_vec = translated_byte_buffer(
+        current_user_token(),
+        _ti as *const u8,
+        core::mem::size_of::<TaskInfo>(),
+    );
+
+    let ref task_info = TaskInfo {
+        status: get_task_status(),
+        syscall_times: get_syscall_times(),
+        time: get_run_time(),
+    };
+
+    let src_ptr = task_info as *const TaskInfo;
+    for (idx, dst) in dst_vec.into_iter().enumerate() {
+        let unit_len = dst.len();
         unsafe {
-            b.copy_from_slice(core::slice::from_raw_parts(
-                task_info_ptr.wrapping_byte_add(i * b_len) as *const u8,
-                b_len
+            dst.copy_from_slice(core::slice::from_raw_parts(
+                src_ptr.wrapping_byte_add(idx * unit_len) as *const u8,
+                unit_len,
             ));
         }
     }
@@ -91,12 +104,9 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
 // YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
     // trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
-    if _start % PAGE_SIZE != 0 ||
-        _port & !0x7 != 0 ||
-        _port & 0x7 == 0 ||
-        _start >= MEMORY_END {
-            return -1;
-        }
+    if _start % PAGE_SIZE != 0 || _port & !0x7 != 0 || _port & 0x7 == 0 || _start >= MEMORY_END {
+        return -1;
+    }
     let start_vpn = VirtAddr::from(_start).floor();
     let end_vpn = VirtAddr::from(_start + _len).ceil();
     let vpn_ranges = VPNRange::new(start_vpn, end_vpn);
@@ -110,8 +120,8 @@ pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
     create_new_map_area(
         start_vpn.into(),
         end_vpn.into(),
-        MapPermission::from_bits_truncate((_port << 1) as u8) | MapPermission::U
-        );
+        MapPermission::from_bits_truncate((_port << 1) as u8) | MapPermission::U,
+    );
     0
 }
 
