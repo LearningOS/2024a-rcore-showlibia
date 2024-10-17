@@ -14,8 +14,11 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, PageTableEntry, VPNRange, VirtAddr, VirtPageNum};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
@@ -80,6 +83,7 @@ impl TaskManager {
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
+        next_task.start_time = Some(get_time_ms());
         drop(inner);
         let mut _unused = TaskContext::zero_init();
         // before this, we should drop local variables that must be dropped manually
@@ -143,6 +147,9 @@ impl TaskManager {
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
+            if inner.tasks[next].start_time.is_none() {
+                inner.tasks[next].start_time = Some(get_time_ms());
+            }
             drop(inner);
             // before this, we should drop local variables that must be dropped manually
             unsafe {
@@ -152,6 +159,72 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    /// When a syscall is called, we need to increase the syscall_times
+    fn count_syscall(&self, syscall_id: usize) {
+        if syscall_id < MAX_SYSCALL_NUM{
+            let mut inner = self.inner.exclusive_access();
+            let current = inner.current_task;
+            inner.tasks[current].syscall_times[syscall_id] += 1;
+        }
+    }
+
+    /// Get the syscall times for the current task
+    fn get_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_times
+    }
+
+    /// Get the task status of current task
+    fn get_task_status(&self) -> TaskStatus{
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_status
+    }
+
+    /// Get the task run time 
+    fn get_run_time(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let current_time = get_time_ms();
+        if let Some(start_time) = inner.tasks[current].start_time {
+            return current_time - start_time;
+        } else {
+            return 0;
+        }
+    } 
+
+    fn get_current_pte(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_set.translate(vpn)
+    }
+
+    fn create_new_map_area(&self, start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_set.insert_framed_area(start_va, end_va, permission);
+    }
+
+    fn unmap_area(&self, _start: usize, _len: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let start_vpn = VirtAddr::from(_start).floor();
+        let end_vpn = VirtAddr::from(_start + _len).ceil();
+        let vpn_ranges = VPNRange::new(start_vpn, end_vpn);
+        for vpn in vpn_ranges {
+            if let Some(pte) = get_current_pte(vpn) {
+                if !pte.is_valid() {
+                    return -1;
+                }
+                inner.tasks[current].memory_set.get_page_table().unmap(vpn);
+            } else {
+                return -1;
+            }  
+        }
+        0
     }
 }
 
@@ -188,6 +261,26 @@ pub fn exit_current_and_run_next() {
     run_next_task();
 }
 
+/// Count the syscall times of syscall_id
+pub fn count_syscall(syscall_id: usize) {
+    TASK_MANAGER.count_syscall(syscall_id);
+}
+
+/// Get the syscall times 
+pub fn get_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
+    TASK_MANAGER.get_syscall_times()
+}
+
+/// Get the task status
+pub fn get_task_status() -> TaskStatus {
+    TASK_MANAGER.get_task_status()
+}
+
+/// Get the task run time
+pub fn get_run_time() -> usize {
+    TASK_MANAGER.get_run_time()
+}
+
 /// Get the current 'Running' task's token.
 pub fn current_user_token() -> usize {
     TASK_MANAGER.get_current_token()
@@ -201,4 +294,19 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// get current task's page table entry
+pub fn get_current_pte(vpn: VirtPageNum) -> Option<PageTableEntry> {
+    TASK_MANAGER.get_current_pte(vpn)
+}
+
+/// create new map area
+pub fn create_new_map_area(start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) {
+    TASK_MANAGER.create_new_map_area(start_va, end_va, permission);
+}
+
+/// unmap area 
+pub fn unmap_area(_start: usize, _len: usize) -> isize {
+    TASK_MANAGER.unmap_area(_start, _len)
 }
