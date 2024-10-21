@@ -2,14 +2,16 @@ use super::{
     block_cache_sync_all, get_block_cache, BlockDevice, DirEntry, DiskInode, DiskInodeType,
     EasyFileSystem, DIRENT_SZ,
 };
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use alloc::string::String;
 use spin::{Mutex, MutexGuard};
 /// Virtual filesystem layer over easy-fs
 pub struct Inode {
-    block_id: usize,
-    block_offset: usize,
+    /// Block id
+    pub block_id: usize,
+    /// Block offset
+    pub block_offset: usize,
     fs: Arc<Mutex<EasyFileSystem>>,
     block_device: Arc<dyn BlockDevice>,
 }
@@ -182,5 +184,106 @@ impl Inode {
             }
         });
         block_cache_sync_all();
+    }
+    /// get the number of link
+    pub fn get_nlink(&self, block_id: usize, block_offset: usize) -> u32 {
+        let fs = self.fs.lock();
+        let mut count = 0;
+        self.read_disk_inode(|disk_inode| {
+            let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+            for i in 0..file_count {
+                let mut dirent = DirEntry::empty();
+                assert_eq!(
+                    disk_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device,),
+                    DIRENT_SZ,
+                );
+                let (_block_id, _block_offset) = fs.get_disk_inode_pos(dirent.inode_id());
+                if _block_id as usize == block_id && _block_offset == block_offset {
+                    count += 1;
+                }
+            }
+            return count;
+        })
+    }
+    /// link new to old
+    pub fn link(&self, _old_name: &str, _new_name: &str) -> Option<Arc<Inode>> {
+        let mut fs = self.fs.lock();
+        // use the root inode to find the inode of old
+        let op = |root_inode: &DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_inode_id(_new_name, root_inode)
+        };
+        if self.read_disk_inode(op).is_some() {
+            return None;
+        }
+        if let Some(old_inode_id) = self.read_disk_inode(|root_inode| {
+            assert!(root_inode.is_dir());
+            self.find_inode_id(_old_name, root_inode)
+        }) {
+            let new_inode_id = old_inode_id;
+            let (block_id, block_offset) = fs.get_disk_inode_pos(old_inode_id);
+            self.modify_disk_inode(|root_inode| {
+                // append file in the dirent
+                let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                let new_size = (file_count + 1) * DIRENT_SZ;
+                // increase size
+                self.increase_size(new_size as u32, root_inode, &mut fs);
+                // write dirent
+                let dirent = DirEntry::new(_new_name, new_inode_id);
+                root_inode.write_at(
+                    file_count * DIRENT_SZ,
+                    dirent.as_bytes(),
+                    &self.block_device,
+                );
+            });
+            Some(Arc::new(Self::new(
+                block_id,
+                block_offset,
+                self.fs.clone(),
+                self.block_device.clone(),
+            )))
+        } else {
+            return None;
+        }
+    }
+    /// unlink at name
+    pub fn unlink(&self, _name: &str) -> isize {
+        let mut fs = self.fs.lock();
+        let op = |root_inode: &DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_inode_id(_name, root_inode)
+        };
+        // if there is no file, return fail
+        if self.read_disk_inode(op).is_none() {
+            return -1;
+        }
+
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let mut tmp = DirEntry::empty();
+            let mut dirent = DirEntry::empty();
+            for i in 0..file_count {
+                root_inode.read_at(i * DIRENT_SZ, tmp.as_bytes_mut(), &self.block_device);
+                if tmp.name() == _name {
+                    root_inode.read_at(
+                        (file_count - 1) * DIRENT_SZ,
+                        dirent.as_bytes_mut(),
+                        &self.block_device,
+                    );
+                    root_inode.write_at(
+                        (file_count - 1) * DIRENT_SZ,
+                        dirent.as_bytes(),
+                        &self.block_device,
+                    );
+                    root_inode.size -= DIRENT_SZ as u32;
+                    return 0;
+                }
+            }
+            return -1;
+        })
     }
 }

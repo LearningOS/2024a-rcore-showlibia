@@ -7,7 +7,10 @@
 use super::__switch;
 use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
+use crate::config::MAX_SYSCALL_NUM;
+use crate::mm::{MapPermission, PageTableEntry, VPNRange, VirtAddr, VirtPageNum};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
 use lazy_static::*;
@@ -44,6 +47,77 @@ impl Processor {
     pub fn current(&self) -> Option<Arc<TaskControlBlock>> {
         self.current.as_ref().map(Arc::clone)
     }
+
+        /// When a syscall is called, we need to increase the syscall_times
+    fn count_syscall(&self, syscall_id: usize) {
+        if syscall_id < MAX_SYSCALL_NUM {
+            let task = self.current().unwrap();
+            let mut inner = task.inner_exclusive_access();
+            inner.syscall_times[syscall_id] += 1;
+        }
+    }
+
+    /// Get the syscall times for the current task
+    fn get_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let task = self.current().unwrap();
+        let inner = task.inner_exclusive_access();
+        inner.syscall_times
+    }
+
+    /// Get the task status of current task
+    fn get_task_status(&self) -> TaskStatus {
+        let task = self.current().unwrap();
+        let inner = task.inner_exclusive_access();
+        inner.task_status
+    }
+
+    /// Get the task run time
+    fn get_run_time(&self) -> usize {
+        let task = self.current().unwrap();
+        let inner = task.inner_exclusive_access();
+        let current_time = get_time_ms();
+        if inner.start_time != 0 {
+            return current_time - inner.start_time;
+        } else {
+            return 0;
+        }
+    }
+
+    /// Get current page table entry
+    fn get_current_pte(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
+        let task = self.current().unwrap();
+        let inner = task.inner_exclusive_access();
+        inner.memory_set.translate(vpn)
+    }
+
+    /// Create new map area
+    fn create_new_map_area(&self, start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) {
+        let task = self.current().unwrap();
+        let mut inner = task.inner_exclusive_access();
+        inner
+            .memory_set
+            .insert_framed_area(start_va, end_va, permission);
+    }
+
+    /// unmap the area
+    fn unmap_area(&self, _start: usize, _len: usize) -> isize {
+        let task = self.current().unwrap();
+        let mut inner = task.inner_exclusive_access();
+        let start_vpn = VirtAddr::from(_start).floor();
+        let end_vpn = VirtAddr::from(_start + _len).ceil();
+        let vpn_ranges = VPNRange::new(start_vpn, end_vpn);
+        for vpn in vpn_ranges {
+            if let Some(pte) = inner.memory_set.translate(vpn) {
+                if !pte.is_valid() {
+                    return -1;
+                }
+                inner.memory_set.get_page_table().unmap(vpn);
+            } else {
+                return -1;
+            }
+        }
+        0
+    }
 }
 
 lazy_static! {
@@ -61,6 +135,9 @@ pub fn run_tasks() {
             let mut task_inner = task.inner_exclusive_access();
             let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;
             task_inner.task_status = TaskStatus::Running;
+            if task_inner.start_time == 0 {
+                task_inner.start_time = get_time_ms()
+            }
             // release coming task_inner manually
             drop(task_inner);
             // release coming task TCB manually
@@ -108,4 +185,41 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     unsafe {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
     }
+}
+
+/// When a syscall is called, we need to increase the syscall_times
+pub fn count_syscall(syscall_id: usize) {
+    PROCESSOR.exclusive_access().count_syscall(syscall_id)
+}
+
+/// Get the syscall times for the current task
+pub fn get_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
+    PROCESSOR.exclusive_access().get_syscall_times()
+}
+
+/// Get the task status of current task
+pub fn get_task_status() -> TaskStatus {
+    PROCESSOR.exclusive_access().get_task_status()
+}
+
+/// Get the task run time
+pub fn get_run_time() -> usize {
+    PROCESSOR.exclusive_access().get_run_time()
+}
+
+/// Get current page table entry
+pub fn get_current_pte(vpn: VirtPageNum) -> Option<PageTableEntry> {
+    PROCESSOR.exclusive_access().get_current_pte(vpn)
+}
+
+/// Create new map area
+pub fn create_new_map_area(start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) {
+    PROCESSOR
+        .exclusive_access()
+        .create_new_map_area(start_va, end_va, permission);
+}
+
+/// unmap the area
+pub fn unmap_area(_start: usize, _len: usize) -> isize {
+    PROCESSOR.exclusive_access().unmap_area(_start, _len)
 }
