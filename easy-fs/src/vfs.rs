@@ -198,11 +198,11 @@ impl Inode {
                     DIRENT_SZ,
                 );
                 let (_block_id, _block_offset) = fs.get_disk_inode_pos(dirent.inode_id());
-                if _block_id as usize == block_id && _block_offset == block_offset {
+                if (_block_id as usize == block_id) && (_block_offset == block_offset) {
                     count += 1;
                 }
             }
-            return count;
+            count
         })
     }
     /// link new to old
@@ -275,7 +275,7 @@ impl Inode {
                         &self.block_device,
                     );
                     root_inode.write_at(
-                        (file_count - 1) * DIRENT_SZ,
+                        i * DIRENT_SZ,
                         dirent.as_bytes(),
                         &self.block_device,
                     );

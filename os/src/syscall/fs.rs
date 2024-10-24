@@ -86,27 +86,36 @@ pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
     let inner = task.inner_exclusive_access();
     if _fd >= inner.fd_table.len() {
         return -1;
-    }   
+    }
     if inner.fd_table[_fd].is_none() {
         return -1;
     }
     if let Some(file) = &inner.fd_table[_fd] {
         let file = file.clone();
-        if !file.readable() {
-            return -1;
-        }
         drop(inner);
         trace!("kernel: sys_read .. file.read");
-        if let Some(osinode)= file.as_any().downcast_ref::<OSInode>() {
-            let osinode_inner = osinode.inner.exclusive_access();
+        if let Some(osinode) = file.as_any().downcast_ref::<OSInode>() {
             let ino = osinode.get_inode_id();
-            let nlink = osinode_inner.inode.get_nlink(osinode_inner.inode.block_id, osinode_inner.inode.block_offset);
-
-            unsafe {
-                (*_st).dev = 0;
-                (*_st).ino = ino;
-                (*_st).nlink = nlink;
-                (*_st).mode = StatMode::FILE;
+            let osinode_inner = osinode.inner.exclusive_access();
+            let nlink = ROOT_INODE.get_nlink(
+                osinode_inner.inode.block_id,
+                osinode_inner.inode.block_offset,
+            );
+            let st = Stat::new(0, ino, StatMode::FILE, nlink);
+            let st_ptr = &st as *const Stat;
+            let dst_vec = translated_byte_buffer(
+                current_user_token(),
+                _st as *const u8,
+                core::mem::size_of::<Stat>(),
+            );
+            for (idx, dst) in dst_vec.into_iter().enumerate() {
+                let unit_len = dst.len();
+                unsafe {
+                    dst.copy_from_slice(core::slice::from_raw_parts(
+                        st_ptr.wrapping_byte_add(idx * unit_len) as *const u8,
+                        unit_len,
+                    ));
+                }
             }
         }
         0
@@ -142,5 +151,16 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
     );
     let token = current_user_token();
     let name = translated_str(token, _name);
-    ROOT_INODE.unlink(name.as_str())
+    if let Some(inode) = ROOT_INODE.find(name.as_str()) {
+        if ROOT_INODE.get_nlink(inode.block_id, inode.block_offset) > 1{
+            // 仅删除链接
+            return ROOT_INODE.unlink(name.as_str())
+        } else {
+            // 用 unlink 彻底删除文件，此时需要回收inode以及它对应的数据块
+            inode.clear();
+            return ROOT_INODE.unlink(name.as_str());   
+        }
+    } else {
+        -1
+    }
 }

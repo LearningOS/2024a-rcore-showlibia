@@ -3,7 +3,6 @@
 mod inode;
 mod stdio;
 
-
 use core::any::Any;
 
 use crate::mm::UserBuffer;
@@ -36,6 +35,19 @@ pub struct Stat {
     pub nlink: u32,
     /// unused pad
     pad: [u64; 7],
+}
+
+impl Stat {
+    /// initialize the Stat
+    pub fn new(dev: u64, ino: u64, mode: StatMode, nlink: u32) -> Self {
+        Self {
+            dev,
+            ino,
+            mode,
+            nlink,
+            pad: [0; 7],
+        }   
+    }
 }
 
 bitflags! {
