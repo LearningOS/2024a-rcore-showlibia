@@ -49,6 +49,20 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// mutex available
+    pub mutex_available: Vec<usize>,
+    // mutex allocation
+    pub mutex_allocation: Vec<Vec<usize>>,
+    /// mutex need
+    pub mutex_need: Vec<Vec<usize>>,
+    /// semaphore available
+    pub semaphore_available: Vec<usize>,
+    /// semaphore allocation
+    pub semaphore_allocation: Vec<Vec<usize>>,
+    /// semaphore need
+    pub semaphore_need: Vec<Vec<usize>>,
+    /// Flag to enable deadlock detection
+    pub enalbe: bool,
 }
 
 impl ProcessControlBlockInner {
@@ -81,6 +95,61 @@ impl ProcessControlBlockInner {
     /// get a task with tid in this process
     pub fn get_task(&self, tid: usize) -> Arc<TaskControlBlock> {
         self.tasks[tid].as_ref().unwrap().clone()
+    }
+    /// check mutex deadlock
+    pub fn check_mutex(&self) -> isize {
+        let mut work: Vec<usize> = self.mutex_available.clone();
+        let mut finish: Vec<bool> = vec![false; self.thread_count()];
+       
+        loop {
+            let mut found = false;
+            for idx in 0..self.thread_count() {
+                if !finish[idx] && self.mutex_need[idx].iter().enumerate().all(|(j, &need)| need <= work[j]) {
+                    for j in 0..self.mutex_list.len() {
+                        work[j] += self.mutex_allocation[idx][j];
+                    }
+                    finish[idx] = true;
+                    found = true;
+                }
+            }
+
+            if !found {
+                break;
+            }
+        }
+
+        if finish.iter().all(|&f| f) {
+            0
+        } else {
+            -0xDEAD 
+        }
+    }
+    /// check semaphore deadlock
+    pub fn check_semaphore(&self) -> isize {
+        let mut work: Vec<usize> = self.semaphore_available.clone();
+        let mut finish: Vec<bool> = vec![false; self.thread_count()];
+        loop {
+            let mut found = false;
+            for idx in 0..self.thread_count() {
+                if !finish[idx] && self.semaphore_need[idx].iter().enumerate().all(|(j, &need)| need <= work[j]) {
+                    for j in 0..self.semaphore_list.len() {
+                        work[j] += self.semaphore_allocation[idx][j];
+                    }
+                    finish[idx] = true;
+                    found = true;
+                }
+            }
+
+            if !found {
+                break;
+            }
+        }
+
+        if finish.iter().all(|&f| f) {
+            0
+        } else {
+            -0xDEAD 
+        }
     }
 }
 
@@ -119,6 +188,13 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    mutex_allocation: Vec::new(),
+                    mutex_available: Vec::new(),
+                    mutex_need: Vec::new(),
+                    semaphore_available: Vec::new(),
+                    semaphore_allocation: Vec::new(),
+                    semaphore_need: Vec::new(),
+                    enalbe: false,
                 })
             },
         });
@@ -130,6 +206,12 @@ impl ProcessControlBlock {
         ));
         // prepare trap_cx of main thread
         let task_inner = task.inner_exclusive_access();
+        let mut process_inner = process.inner_exclusive_access();
+        process_inner.mutex_allocation.push(vec![0;0]);
+        process_inner.mutex_need.push(vec![0;0]);
+        process_inner.semaphore_allocation.push(vec![0;0]);
+        process_inner.semaphore_need.push(vec![0;0]);
+        drop(process_inner);
         let trap_cx = task_inner.get_trap_cx();
         let ustack_top = task_inner.res.as_ref().unwrap().ustack_top();
         let kstack_top = task.kstack.get_top();
@@ -170,6 +252,19 @@ impl ProcessControlBlock {
         task_inner.res.as_mut().unwrap().ustack_base = ustack_base;
         task_inner.res.as_mut().unwrap().alloc_user_res();
         task_inner.trap_cx_ppn = task_inner.res.as_mut().unwrap().trap_cx_ppn();
+        // 初始化exec的线程锁
+        let mut process_inner = self.inner_exclusive_access();
+        process_inner.mutex_available = Vec::new();
+        process_inner.semaphore_available =Vec::new();
+        process_inner.mutex_allocation =Vec::new();
+        process_inner.semaphore_allocation =Vec::new();
+        process_inner.mutex_need =Vec::new();
+        process_inner.semaphore_need =Vec::new();
+        process_inner.mutex_allocation.push(vec![0;0]);
+        process_inner.mutex_need.push(vec![0;0]);
+        process_inner.semaphore_allocation.push(vec![0;0]);
+        process_inner.semaphore_need.push(vec![0;0]);
+        drop(process_inner);
         // push arguments on user stack
         trace!("kernel: exec .. push arguments on user stack");
         let mut user_sp = task_inner.res.as_mut().unwrap().ustack_top();
@@ -245,6 +340,13 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    mutex_allocation: Vec::new(),
+                    mutex_available: Vec::new(),
+                    mutex_need: Vec::new(),
+                    semaphore_available: Vec::new(),
+                    semaphore_allocation: Vec::new(),
+                    semaphore_need: Vec::new(),
+                    enalbe: false,
                 })
             },
         });
@@ -267,6 +369,10 @@ impl ProcessControlBlock {
         // attach task to child process
         let mut child_inner = child.inner_exclusive_access();
         child_inner.tasks.push(Some(Arc::clone(&task)));
+        child_inner.mutex_allocation.push(vec![0;0]);
+        child_inner.mutex_need.push(vec![0;0]);
+        child_inner.semaphore_allocation.push(vec![0;0]);
+        child_inner.semaphore_need.push(vec![0;0]);
         drop(child_inner);
         // modify kstack_top in trap_cx of this thread
         let task_inner = task.inner_exclusive_access();
