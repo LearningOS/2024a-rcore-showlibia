@@ -205,6 +205,8 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
     if process_inner.semaphore_allocation[tid][sem_id] > 0 {
         process_inner.semaphore_available[sem_id] += 1;
         process_inner.semaphore_allocation[tid][sem_id] -= 1;
+        // 这里已经分配了，当然不需要更新need
+        // process_inner.semaphore_need[tid][sem_id] -= 1;
     }
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
