@@ -205,7 +205,6 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
     if process_inner.semaphore_allocation[tid][sem_id] > 0 {
         process_inner.semaphore_available[sem_id] += 1;
         process_inner.semaphore_allocation[tid][sem_id] -= 1;
-        process_inner.semaphore_need[tid][sem_id] -= 1;
     }
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
@@ -241,6 +240,8 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
     } else {
         process_inner.semaphore_need[tid][sem_id] += 1;
         if enable && process_inner.check_semaphore() != 0 {
+            debug!("sys_semaphore_down: sem_id: {}, tid: {}, available: {}, allocation: {}, need: {}",
+       sem_id, tid, process_inner.semaphore_available[sem_id], process_inner.semaphore_allocation[tid][sem_id], process_inner.semaphore_need[tid][sem_id]);
             return -0xDEAD;
         }
     }
